@@ -1,0 +1,13 @@
+package: redaxo_module_template_synch
+version: '0.0.1'
+author: Benjamin Hacker
+
+page:
+  title: 'Redaxo Module/ Template Sync'
+  icon: rex-icon fa-link
+  perm: admin
+
+requires:
+  php:
+    version: '>=7.4.0'
+  redaxo: '>=5.0.0'
