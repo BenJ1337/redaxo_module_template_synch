@@ -1,18 +1,20 @@
 <?php
 $text = '';
 
-$dir = rex_path::addonData($this->getName());
-writeTableToFiles('module', $dir);
-writeTableToFiles('template', $dir);
+if (false) {
+    $dir = rex_path::addonData($this->getName());
+    writeTableToFiles('module', $dir);
+    writeTableToFiles('template', $dir);
 
-$templates = getTemplatesFromFile($dir);
-$moduels = getModulesFromFile($dir);
+    $templates = getTemplatesFromFile($dir);
+    $moduels = getModulesFromFile($dir);
 
-extractInputOutput($dir, $moduels);
-extractContent($dir, $templates);
+    extractInputOutput($dir, $moduels);
+    extractContent($dir, $templates);
 
-syncTemplate($dir, $templates);
-syncModules($dir, $moduels);
+    syncTemplate($dir, $templates);
+    syncModules($dir, $moduels);
+}
 
 
 function syncTemplate($dir, $templates)
