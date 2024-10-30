@@ -2,35 +2,48 @@
 
 namespace redaxo_module_template_synch;
 
-use rex_logger, rex_path, rex_sql, rex_file, PDO, DateTime;
+use rex_logger, rex_path, rex_sql, rex_file, rex_extension, rex_extension_point, PDO, DateTime;
 
 class TemplateModuleSyncService
 {
     private static $ext = 'php';
     private static $tempFiles = 'arr';
 
+    /**
+     * Synchronizes between the templates and modules in the database and file on the filesystem. The newer version wins.
+     * @param string $name Name des Addons
+     * @return void
+     */
     public static function doSync(string $name)
     {
         if (true) {
-            $dir = rex_path::addonData($name);
-            self::writeTableToFiles('module', $dir);
-            self::writeTableToFiles('template', $dir);
-
-            $templates = self::getTemplatesFromFile($dir);
-            $modules = self::getModulesFromFile($dir);
-
-            self::extractInputOutput($dir, $modules);
-            self::extractContent($dir, $templates);
-
-            self::syncTemplate($dir, $templates);
-            self::syncModules($dir, $modules);
+            $path2DataDir = rex_path::addonData($name);
+            // Read data from database
+            self::writeTableToFiles('module', $path2DataDir);
+            self::writeTableToFiles('template', $path2DataDir);
+            // Read data previously read from database (and written to disk) into a map structure
+            $templates = self::getTemplatesFromFile($path2DataDir);
+            $modules = self::getModulesFromFile($path2DataDir);
+            // Updates version in workingdirectory (work) if the database version is newer
+            self::extractInputOutput($path2DataDir, $modules);
+            self::extractContent($path2DataDir, $templates);
+            // Updates version in database if the file version of the workingdirectory (work) is newer
+            self::syncTemplatesInDb($path2DataDir, $templates);
+            self::syncModulesInDb($path2DataDir, $modules);
         }
     }
 
-    private static function syncTemplate(string $dir, $templates): void
+    /**
+     * Updates the version in the database for all templates depending on its timestamp. If the version in the database is older than the file version, it gets updated
+     *
+     * @param string $path2DataDir Path the this addons data directory
+     * @param array $templates Map<Name of template, Content of template>
+     * @return void
+     */
+    private static function syncTemplatesInDb(string $path2DataDir, array $templates): void
     {
         foreach ($templates as $name => $template) {
-            $outputFilepath = self::getTemplateContentFilepath($name, $dir);
+            $outputFilepath = self::getTemplateContentFilepath($name, $path2DataDir);
             $dbUpdateTS = DateTime::createFromFormat('Y-m-d H:i:s', $template['rex_template.updatedate']);
             $fileTemplateUpdateTS = DateTime::createFromFormat('U', filemtime($outputFilepath));
 
@@ -71,12 +84,18 @@ class TemplateModuleSyncService
         }
     }
 
-
-    private static function syncModules(string $dir, $modules): void
+    /**
+     * Updates the version in the database for all modules depending on its timestamp. If the version in the database is older than the file version, it gets updated
+     *
+     * @param string $path2DataDir Path the this addons data directory
+     * @param array $modules Map<Name of module, <type [input|output], Content of type of module>>
+     * @return void
+     */
+    private static function syncModulesInDb(string $path2DataDir, array $modules): void
     {
         foreach ($modules as $name => $module) {
-            $inputPath = self::getModuleFilepath($name, $dir, 'input');
-            $outputPath = self::getModuleFilepath($name, $dir, 'output');
+            $inputPath = self::getModuleFilepath($name, $path2DataDir, 'input');
+            $outputPath = self::getModuleFilepath($name, $path2DataDir, 'output');
             $dbUpdateTS = DateTime::createFromFormat('Y-m-d H:i:s', $module['rex_module.updatedate']);
             $fileInputUpdateTS = DateTime::createFromFormat('U', filemtime($inputPath));
             $fileOutputUpdateTS = DateTime::createFromFormat('U', filemtime($outputPath));
@@ -115,42 +134,58 @@ class TemplateModuleSyncService
         }
     }
 
-
-
-    private static function getTemplatesFromFile(string $dir): array
+    /**
+     * Reads the data of the current database version of all templates
+     *
+     * @param string $path2DataDir Path the this addons data directory
+     * @return array Map<Name of template, Content of template>
+     */
+    private static function getTemplatesFromFile(string $path2DataDir): array
     {
-        $rex = join(DIRECTORY_SEPARATOR, array($dir . 'template', "*." . self::$tempFiles));
+        $rex = join(DIRECTORY_SEPARATOR, array($path2DataDir . 'template', "*." . self::$tempFiles));
         $files = glob($rex);
         $templates = array();
         foreach ($files as $text) {
             $content = unserialize(rex_file::get($text, ''));
             $name = $content['rex_template.name'];
-            $name = self::sanetizeName($name);
-            $templates[$name] = $content;
+            $templates[self::sanetizeName($name)] = $content;
         }
         return $templates;
     }
 
-    private static function getModulesFromFile(string $dir): array
+    /**
+     * Reads the data of the current database version of all modules
+     *
+     * @param string $path2DataDir Path the this addons data directory
+     * @return array Map<Name of module, <type [input|output], Content of type of module>>
+     */
+    private static function getModulesFromFile(string $path2DataDir): array
     {
         $modules = array();
-        $rex = join(DIRECTORY_SEPARATOR, array($dir . 'module', "*." . self::$tempFiles));
+        $rex = join(DIRECTORY_SEPARATOR, array($path2DataDir . 'module', "*." . self::$tempFiles));
         $files = glob($rex);
         foreach ($files as $text) {
             $content = unserialize(rex_file::get($text, ''));
             $name = $content['rex_module.name'];
-            $modules[$name] = $content;
+            $modules[self::sanetizeName($name)] = $content;
         }
         return $modules;
     }
 
-    private static function extractContent(string $dir, $templates): void
+    /**
+     * Updates version in all template files which are older than the version in the database
+     *
+     * @param string $path2DataDir Path the this addons data directory
+     * @param array $templates Map<Name of template, Content of template>
+     * @return void
+     */
+    private static function extractContent(string $path2DataDir, array $templates): void
     {
         foreach ($templates as $name => $template) {
             $templateContent = $template['rex_template.content'];
 
             $dbUpdateTS = DateTime::createFromFormat('Y-m-d H:i:s', $template['rex_template.updatedate']);
-            $outputFilepath = self::getTemplateContentFilepath($name, $dir);
+            $outputFilepath = self::getTemplateContentFilepath($name, $path2DataDir);
             if (file_exists($outputFilepath)) {
                 $fileTemplateUpdateTS = DateTime::createFromFormat('U', filemtime($outputFilepath));
 
@@ -163,21 +198,43 @@ class TemplateModuleSyncService
         }
     }
 
-    private static function getTemplateContentFilepath($name, string $dir): string
+    /**
+     * Extracts data for the specific template by its name and return the content of the file
+     *
+     * @param string $name Name of the template
+     * @param string $path2DataDir Path the this addons data directory
+     * @return string
+     */
+    private static function getTemplateContentFilepath(string $name, string $path2DataDir): string
     {
         $name = self::sanetizeName($name);
-        $workDir = join(DIRECTORY_SEPARATOR, array($dir . 'work', 'template', $name));
-        return  join(DIRECTORY_SEPARATOR, array($workDir, 'content.' . self::$ext));
+        $workpath2Data = join(DIRECTORY_SEPARATOR, array($path2DataDir . 'work', 'template', $name));
+        return  join(DIRECTORY_SEPARATOR, array($workpath2Data, 'content.' . self::$ext));
     }
 
-    private static function getModuleFilepath($name, $dir, $art): string
+    /**
+     * Extracts data for the specific module by its name and return the content of the file of the selected type (input/output)
+     *
+     * @param string $name Name of the module
+     * @param string $path2DataDir Path the this addons data directory
+     * @param string $type input or output 
+     * @return string
+     */
+    private static function getModuleFilepath(string $name, string $path2DataDir, string $type): string
     {
         $name = self::sanetizeName($name);
-        $workDir = join(DIRECTORY_SEPARATOR, array($dir . 'work', 'module', $name));
-        return join(DIRECTORY_SEPARATOR, array($workDir, $art . '.' . self::$ext));
+        $workpath2Data = join(DIRECTORY_SEPARATOR, array($path2DataDir . 'work', 'module', $name));
+        return join(DIRECTORY_SEPARATOR, array($workpath2Data, $type . '.' . self::$ext));
     }
 
-    private static function extractInputOutput(string $dir, $modules)
+    /**
+     * Updates the version in the files for input and output if the verion of the database is newer than the file version
+     *
+     * @param string $path2DataDir Path the this addons data directory
+     * @param array $modules Map<Name of module, <type [input|output], Content of type of module>>
+     * @return void
+     */
+    private static function extractInputOutput(string $path2DataDir, array $modules): void
     {
         foreach ($modules as $name => $module) {
             $input = $module['rex_module.input'];
@@ -185,7 +242,7 @@ class TemplateModuleSyncService
 
             $dbUpdateTS = DateTime::createFromFormat('Y-m-d H:i:s', $module['rex_module.updatedate']);
 
-            $inputFilepath  = self::getModuleFilepath($name, $dir, 'input');
+            $inputFilepath  = self::getModuleFilepath($name, $path2DataDir, 'input');
             if (file_exists($inputFilepath)) {
                 $fileInputUpdateTS = DateTime::createFromFormat('U', filemtime($inputFilepath));
                 if ($dbUpdateTS > $fileInputUpdateTS) {
@@ -194,7 +251,7 @@ class TemplateModuleSyncService
             } else {
                 rex_file::put($inputFilepath, $output);
             }
-            $outputFilepath  = self::getModuleFilepath($name, $dir, 'output');
+            $outputFilepath  = self::getModuleFilepath($name, $path2DataDir, 'output');
             if (file_exists($outputFilepath)) {
                 $fileOutputUpdateTS = DateTime::createFromFormat('U', filemtime($outputFilepath));
                 if ($dbUpdateTS > $fileOutputUpdateTS) {
@@ -207,13 +264,26 @@ class TemplateModuleSyncService
     }
 
 
-    private static function sanetizeName($input)
+    /**
+     * converts the string to a valid filename
+     *
+     * @param string $input name of the template or module
+     * @return string valid filename
+     */
+    private static function sanetizeName(string $input): string
     {
         $input = trim(mb_ereg_replace("([^\w\s\d\-_~\[\]\(\).])", '', $input));
         return mb_ereg_replace("([\.]{2,})", '', $input);
     }
 
-    private static function writeTableToFiles(string $target, string $dir)
+    /**
+     * Writes each entry in the table to a separate file
+     *
+     * @param string $target Database table
+     * @param string $path2DataDir Directory to put the files in
+     * @return void
+     */
+    private static function writeTableToFiles(string $target, string $path2DataDir): void
     {
         $sql = rex_sql::factory();
         $sql->setQuery('SELECT * FROM rex_' . $target);
@@ -228,7 +298,7 @@ class TemplateModuleSyncService
             $mId = '' . $array['rex_' . $target . '.id'];
 
 
-            $fullpath = join(DIRECTORY_SEPARATOR, array($dir, $target, $target . '_' . $mId . '.' . self::$tempFiles));
+            $fullpath = join(DIRECTORY_SEPARATOR, array($path2DataDir, $target, $target . '_' . $mId . '.' . self::$tempFiles));
             rex_file::put($fullpath, $arraySer);
 
             //var_export($arraySer, true);
@@ -236,4 +306,6 @@ class TemplateModuleSyncService
     }
 }
 
-TemplateModuleSyncService::doSync(self::getName());
+rex_extension::register('RESPONSE_SHUTDOWN', function (rex_extension_point $rex_extension_point) {
+    TemplateModuleSyncService::doSync(self::getName());
+});
